@@ -65,6 +65,12 @@ flags.DEFINE_float(
     "maximum length.")
 
 
+###################################################################################################
+#
+# 每一个训练样本有以下5个字段组成：
+# tokens, segment_ids, is_random_next, masked_lm_positions, masked_lm_labels.
+#
+###################################################################################################
 class TrainingInstance(object):
     """A single training instance (sentence pair)."""
 
@@ -93,6 +99,11 @@ class TrainingInstance(object):
         return self.__str__()
 
 
+###################################################################################################
+#
+# 将训练样本列表写入输出文件列表中.
+#
+###################################################################################################
 def write_instance_to_example_files(instances, tokenizer, max_seq_length,
                                     max_predictions_per_seq, output_files):
     """Create TF example files from `TrainingInstance`s."""
@@ -109,6 +120,9 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         segment_ids = list(instance.segment_ids)
         assert len(input_ids) <= max_seq_length
 
+        ###########################################################################################
+        # 将input_ids, input_mask, segment_ids补齐至max_seq_length.
+        ###########################################################################################
         while len(input_ids) < max_seq_length:
             input_ids.append(0)
             input_mask.append(0)
@@ -118,6 +132,10 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
 
+        ###########################################################################################
+        # 记录word mask的位置，以及对应ground-truth单词，并将其转化为id.
+        # 同样将其补齐至max_seq_length.
+        ###########################################################################################
         masked_lm_positions = list(instance.masked_lm_positions)
         masked_lm_ids = tokenizer.convert_tokens_to_ids(instance.masked_lm_labels)
         masked_lm_weights = [1.0] * len(masked_lm_ids)
@@ -129,6 +147,11 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
 
         next_sentence_label = 1 if instance.is_random_next else 0
 
+        ###########################################################################################
+        #
+        # 创建tf.train.Feature特征列表，从而为tf.train.Example创建做准备.
+        #
+        ###########################################################################################
         features = collections.OrderedDict()
         features["input_ids"] = create_int_feature(input_ids)
         features["input_mask"] = create_int_feature(input_mask)
@@ -138,8 +161,18 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
         features["next_sentence_labels"] = create_int_feature([next_sentence_label])
 
+        ###########################################################################################
+        #
+        # 从特征列表中创建tf.train.Example实例. 注意这里的实例为example_proto (即尚未序列化的数据结构)
+        #
+        ###########################################################################################
         tf_example = tf.train.Example(features=tf.train.Features(feature=features))
 
+        ###########################################################################################
+        #
+        # 调用序列化方法，将example_proto序列化为字符串，并且写入文件.
+        #
+        ###########################################################################################
         writers[writer_index].write(tf_example.SerializeToString())
         writer_index = (writer_index + 1) % len(writers)
 
@@ -160,17 +193,30 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
                 tf.logging.info(
                     "%s: %s" % (feature_name, " ".join([str(x) for x in values])))
 
+    # 关闭all the writers.
     for writer in writers:
         writer.close()
 
     tf.logging.info("Wrote %d total instances", total_written)
 
 
+#################################################################################################
+#
+# 创建tf.train.Feature实例，从一个整数列表中.
+# 如果需要从标量中创建Feature实例，请参考:https://tensorflow.google.cn/tutorials/load_data/tf_records
+#
+#################################################################################################
 def create_int_feature(values):
     feature = tf.train.Feature(int64_list=tf.train.Int64List(value=list(values)))
     return feature
 
 
+#################################################################################################
+#
+# 创建tf.train.Feature实例，从一个浮点数列表中.
+# 如果需要从标量中创建Feature实例，请参考:https://tensorflow.google.cn/tutorials/load_data/tf_records
+#
+#################################################################################################
 def create_float_feature(values):
     feature = tf.train.Feature(float_list=tf.train.FloatList(value=list(values)))
     return feature
