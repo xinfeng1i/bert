@@ -75,6 +75,13 @@ def validate_case_matches_checkpoint(do_lower_case, init_checkpoint):
                                               model_name, case_name, opposite_flag))
 
 
+###################################################################################################
+#
+# 将输入 `text` 转化为 unicode 字符串：
+# 1. 如果它已经是unicode字符串，则直接返回;
+# 2. 否则，假设它为UTF-8编码，解码为unicode字符串.
+#
+###################################################################################################
 def convert_to_unicode(text):
     """Converts `text` to Unicode (if it's not already), assuming utf-8 input."""
     if six.PY3:
@@ -118,6 +125,11 @@ def printable_text(text):
         raise ValueError("Not running on Python2 or Python 3?")
 
 
+###################################################################################################
+#
+# 从文件中加载vocab，其中文件的格式为：每一行一个token，返回一个vocab字典{token: id}
+#
+###################################################################################################
 def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
     vocab = collections.OrderedDict()
@@ -133,6 +145,11 @@ def load_vocab(vocab_file):
     return vocab
 
 
+###################################################################################################
+#
+# 将输入的token序列转化为对应的id序列, 或者将输入的id序列转化为token序列，取决于输入的内容.
+#
+###################################################################################################
 def convert_by_vocab(vocab, items):
     """Converts a sequence of [tokens|ids] using the vocab."""
     output = []
@@ -140,15 +157,29 @@ def convert_by_vocab(vocab, items):
         output.append(vocab[item])
     return output
 
-
+###################################################################################################
+#
+# 将输入的token序列转化为对应id序列，通过查词典的方式.
+#
+###################################################################################################
 def convert_tokens_to_ids(vocab, tokens):
     return convert_by_vocab(vocab, tokens)
 
 
+###################################################################################################
+#
+# 将输入的id序列转化为对应token序列，通过查逆向词典的方式.
+#
+###################################################################################################
 def convert_ids_to_tokens(inv_vocab, ids):
     return convert_by_vocab(inv_vocab, ids)
 
 
+###################################################################################################
+#
+# 以空格为分隔符将输入文本 `text` tokenize化.
+#
+###################################################################################################
 def whitespace_tokenize(text):
     """Runs basic whitespace cleaning and splitting on a piece of text."""
     text = text.strip()
@@ -158,6 +189,14 @@ def whitespace_tokenize(text):
     return tokens
 
 
+###################################################################################################
+#
+# 对输入的 `text` 文本进行端到端的tokenize, 步骤如下:
+# 1. 加载wordpiece的词表vocab
+# 2. 首先对输入text进行基本的tokenize，得到char粒度的token序列（中文为单个汉字，英文为单个word)
+# 3. 对步骤2中的每个token通过查表vocab得到wordpiece
+#
+###################################################################################################
 class FullTokenizer(object):
     """Runs end-to-end tokenziation."""
 
@@ -182,6 +221,11 @@ class FullTokenizer(object):
         return convert_by_vocab(self.inv_vocab, ids)
 
 
+###################################################################################################
+#
+# BasicTokenizer: 对一段文本进行基本的数据清洗后，按照word粒度（中文按照char)粒度进行分割，不涉及词表vocab问题.
+#
+###################################################################################################
 class BasicTokenizer(object):
     """Runs basic tokenization (punctuation splitting, lower casing, etc.)."""
 
@@ -193,6 +237,16 @@ class BasicTokenizer(object):
     """
         self.do_lower_case = do_lower_case
 
+    ###############################################################################################
+    #
+    # Basic Tokenizer:
+    # 1. 将文本转化成unicode文本，文本清洗(移除控制字符，空白字符\t\r\n统一为空格)
+    # 2. 在中文字符左右两侧增加空格 ("S中国人E" ==> "S 中 国 人 E")
+    # 3. 按照空格进行split得到原始的token序列orig_tokens; 如果do_lower_case=True，转入步骤4；否则转入步骤5.
+    # 4. 如果设置do_lower_case=True，则将orig_tokens中的每个token进行小写化，并移除重音; 转入步骤5.
+    # 5. 将origin_tokens中的每个token按照标点符号进行split (例如: "hello," ==> ["hello", ","]), 追加到tokens序列
+    #
+    ###############################################################################################
     def tokenize(self, text):
         """Tokenizes a piece of text."""
         text = convert_to_unicode(text)
@@ -228,6 +282,7 @@ class BasicTokenizer(object):
             output.append(char)
         return "".join(output)
 
+    # 将输入的token按照标点符号分割为token序列，例如: "world," ==> ["world", ","]
     def _run_split_on_punc(self, text):
         """Splits punctuation on a piece of text."""
         chars = list(text)
@@ -248,6 +303,7 @@ class BasicTokenizer(object):
 
         return ["".join(x) for x in output]
 
+    # 在单个中文字符的两侧增加空格字符. 例如: "S我是中国人E" --> "S 我  是  中  国  人 E"
     def _tokenize_chinese_chars(self, text):
         """Adds whitespace around any CJK character."""
         output = []
@@ -261,6 +317,7 @@ class BasicTokenizer(object):
                 output.append(char)
         return "".join(output)
 
+    # 判断一个字符是否为中文字符，这里中文字符定义为CJK Unicode Block内的所有字符.
     def _is_chinese_char(self, cp):
         """Checks whether CP is the codepoint of a CJK character."""
         # This defines a "chinese character" as anything in the CJK Unicode block:
@@ -283,6 +340,7 @@ class BasicTokenizer(object):
 
         return False
 
+    # 移除基本的控制字符，对所有的空白字符进行归一化，保持普通字符和标点符号不变.
     def _clean_text(self, text):
         """Performs invalid character removal and whitespace cleanup on text."""
         output = []
@@ -297,6 +355,11 @@ class BasicTokenizer(object):
         return "".join(output)
 
 
+###################################################################################################
+#
+# 对一个token序列进行wordpiece化，将每个token按照给定的vocab进行最长匹配查找其对应的wordpiece.
+#
+###################################################################################################
 class WordpieceTokenizer(object):
     """Runs WordPiece tokenziation."""
 
@@ -328,10 +391,22 @@ class WordpieceTokenizer(object):
         output_tokens = []
         for token in whitespace_tokenize(text):
             chars = list(token)
+            # 如果当前token的长度已经大于max_input_chars_per_word，则将该token看作是unk，加入output_tokens.
             if len(chars) > self.max_input_chars_per_word:
                 output_tokens.append(self.unk_token)
                 continue
 
+            ########################################################################################
+            #
+            # 单个token的WordPiece:
+            # 1. 初始化: start指向token的起始位置，end指向token的最后一个字符的下一个位置
+            # 2. 固定start指针不变，end指针不断前移，判断[start, end)之间的子串substr是否位于vocab内；如果不在
+            #    vocab内则，end指针减一，直到start==end，说明vocab不存在这样的substr，因此是一个bad token，置is_bad=True
+            # 3. 如果[start,end)之间的substr在vocab内，则将该追加到最终的output_tokens列表;
+            # 4. 然后让start指针指向end位置, 如果start < len(chars)，则回到步骤2继续执行
+            # 5. 直到start==len(chars)，则遍历完成整个token中的所有chars，返回output_tokens
+            #
+            ########################################################################################
             is_bad = False
             start = 0
             sub_tokens = []
@@ -359,6 +434,12 @@ class WordpieceTokenizer(object):
         return output_tokens
 
 
+###################################################################################################
+#
+# 判断一个字符是否是空白字符, 其中空白字符定义为:
+# " ", "\t", "\r", "\n", 以及其他Unicode标准中General_Category为Zs的空白字符.
+#
+###################################################################################################
 def _is_whitespace(char):
     """Checks whether `chars` is a whitespace character."""
     # \t, \n, and \r are technically contorl characters but we treat them
@@ -371,6 +452,12 @@ def _is_whitespace(char):
     return False
 
 
+###################################################################################################
+#
+# 判断一个字符是否是控制字符, 其中控制字符定义为:
+# Unicode标准中General_Category为Control(Cc)、Format(Cf)的字符.
+#
+###################################################################################################
 def _is_control(char):
     """Checks whether `chars` is a control character."""
     # These are technically control characters but we count them as whitespace
@@ -383,6 +470,13 @@ def _is_control(char):
     return False
 
 
+###################################################################################################
+#
+# 判断一个字符是否是标点符号, 其中标点符号定义为:
+# 1. ASCII中所有的非字母、数字符号，包括 "^", "$", "`"等
+# 2. Unicode标准中General_Category以"_Punctuation"结尾的字符.
+#
+###################################################################################################
 def _is_punctuation(char):
     """Checks whether `chars` is a punctuation character."""
     cp = ord(char)
