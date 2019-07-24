@@ -28,6 +28,22 @@ import six
 import tensorflow as tf
 
 
+###################################################################################################
+#
+# BertModel的配置结构体，主要成员包括:
+#   vocab_size: 模型词汇表
+#   hidden_size: 模型隐层大小
+#   num_hidden_layers: 隐层stack的层数
+#   num_attention_heads: multi-head-attention head个数
+#   intermediate_size: FFN的隐层大小
+#   hidden_act: 隐层的非线性激活函数(包括encoder层，pooler层)
+#   hidden_dropout_prob: dropout概率（包括embeddings层, encoder层, pooler层）
+#   attention_probs_dropout_prob: attention drop概率
+#   max_position_embeddings: 最大序列长度
+#   type_vocab_size: todo
+#   initializer_range: 截断高斯分布的标准差，用于初始化所有的权重矩阵
+#
+###################################################################################################
 class BertConfig(object):
     """Configuration for `BertModel`."""
 
@@ -171,6 +187,8 @@ class BertModel(object):
         with tf.variable_scope(scope, default_name="bert"):
             with tf.variable_scope("embeddings"):
                 # Perform embedding lookup on the word ids.
+                # 将input_ids查表得到对应的embedding后的表示
+                # embedding_output大小为[batch_size, seq_length, embedding_size]
                 (self.embedding_output, self.embedding_table) = embedding_lookup(
                     input_ids=input_ids,
                     vocab_size=config.vocab_size,
@@ -377,6 +395,17 @@ def create_initializer(initializer_range=0.02):
     return tf.truncated_normal_initializer(stddev=initializer_range)
 
 
+###################################################################################################
+#
+# 输入size为[batch_size, seq_length]的input_ids, 返回创建的embedding_table和查表后得到的outputs.
+#
+# Args:
+#   input_ids: [batch_size, seq_length]
+# Returns:
+#   output: [batch_size, seq_length, embedding_size]
+#   embedding_table: [vocab_size, embedding_size]
+#
+###################################################################################################
 def embedding_lookup(input_ids,
                      vocab_size,
                      embedding_size=128,
@@ -404,22 +433,23 @@ def embedding_lookup(input_ids,
     # If the input is a 2D tensor of shape [batch_size, seq_length], we
     # reshape to [batch_size, seq_length, 1].
     if input_ids.shape.ndims == 2:
-        input_ids = tf.expand_dims(input_ids, axis=[-1])
+        input_ids = tf.expand_dims(input_ids, axis=[-1])  # size: [batch_size, seq_length, 1]
 
     embedding_table = tf.get_variable(
         name=word_embedding_name,
         shape=[vocab_size, embedding_size],
-        initializer=create_initializer(initializer_range))
+        initializer=create_initializer(initializer_range))  # size: [vocab_size, embedding_size]
 
-    flat_input_ids = tf.reshape(input_ids, [-1])
+    flat_input_ids = tf.reshape(input_ids, [-1])  # size: [batch_size*seq_length,]
     if use_one_hot_embeddings:
         one_hot_input_ids = tf.one_hot(flat_input_ids, depth=vocab_size)
         output = tf.matmul(one_hot_input_ids, embedding_table)
     else:
-        output = tf.gather(embedding_table, flat_input_ids)
+        output = tf.gather(embedding_table, flat_input_ids)  # size: [batch_size*seq_length, embedding_size]
 
-    input_shape = get_shape_list(input_ids)
+    input_shape = get_shape_list(input_ids)  # size: [batch_size, seq_length, 1]
 
+    # size: [batch_size, seq_length, embedding_size]
     output = tf.reshape(output,
                         input_shape[0:-1] + [input_shape[-1] * embedding_size])
     return (output, embedding_table)
