@@ -199,6 +199,8 @@ class BertModel(object):
 
                 # Add positional embeddings and token type embeddings, then layer
                 # normalize and perform dropout.
+
+                # 后处理过程增加了位置token_type_embedding和position_embedding, 两者都是element-wise相加.
                 self.embedding_output = embedding_postprocessor(
                     input_tensor=self.embedding_output,
                     use_token_type=True,
@@ -455,6 +457,15 @@ def embedding_lookup(input_ids,
     return (output, embedding_table)
 
 
+###################################################################################################
+#
+# Embedding的后处理过程主要做了3件事情：
+# 1. 增加token-type embedding
+# 2. 增加position embedding
+# 3. dropout
+# 其中1和2本质上都是各自有一个embedding表，查表得到embedding表示后, elment-wise的和input embedding相加.
+#
+###################################################################################################
 def embedding_postprocessor(input_tensor,
                             use_token_type=False,
                             token_type_ids=None,
@@ -495,7 +506,7 @@ def embedding_postprocessor(input_tensor,
     input_shape = get_shape_list(input_tensor, expected_rank=3)
     batch_size = input_shape[0]
     seq_length = input_shape[1]
-    width = input_shape[2]
+    width = input_shape[2]  # 输入tensor的embedding_size
 
     output = input_tensor
 
@@ -503,17 +514,27 @@ def embedding_postprocessor(input_tensor,
         if token_type_ids is None:
             raise ValueError("`token_type_ids` must be specified if"
                              "`use_token_type` is True.")
+
+        # 创建token_type的embedding矩阵，大小为[token_type_vocab_size=16, input_embedding_size]
         token_type_table = tf.get_variable(
             name=token_type_embedding_name,
             shape=[token_type_vocab_size, width],
             initializer=create_initializer(initializer_range))
         # This vocab will be small so we always do one-hot here, since it is always
         # faster for a small vocabulary.
-        flat_token_type_ids = tf.reshape(token_type_ids, [-1])
-        one_hot_ids = tf.one_hot(flat_token_type_ids, depth=token_type_vocab_size)
-        token_type_embeddings = tf.matmul(one_hot_ids, token_type_table)
+
+        # 这部分本质上就是在进行查表操作：
+        # 1. 先将输入的token压缩为一维token序列
+        # 2. 然后得到token序列的onehot表示
+        # 3. 乘以embedding矩阵，得到token的embedding表示
+        # 4. reshape得到input_tensor一样的shape: [batch_size, seq_length, input_embedding_size]
+        flat_token_type_ids = tf.reshape(token_type_ids, [-1])  # shape: [batch_size*seq_len, ]
+        one_hot_ids = tf.one_hot(flat_token_type_ids, depth=token_type_vocab_size)  # shape: [batch_size*seq_len, 16]
+        token_type_embeddings = tf.matmul(one_hot_ids, token_type_table) # shape: [batch_size*seq_len, input_embedding_size]
         token_type_embeddings = tf.reshape(token_type_embeddings,
-                                           [batch_size, seq_length, width])
+                                           [batch_size, seq_length, width]) # shape: [batch_size, seq_len, input_embedding_size]
+
+        # token_type的embedding表示与input_tensor进行element-wise的相加
         output += token_type_embeddings
 
     if use_position_embeddings:
@@ -532,6 +553,9 @@ def embedding_postprocessor(input_tensor,
             # for position [0, 1, 2, ..., max_position_embeddings-1], and the current
             # sequence has positions [0, 1, 2, ... seq_length-1], so we can just
             # perform a slice.
+
+            # 将[max_seq_length, input_embedding_size]的矩阵截断为 [seq_length, input_embedding_size]的矩阵
+            # 方便后续的element-wise相加
             position_embeddings = tf.slice(full_position_embeddings, [0, 0],
                                            [seq_length, -1])
             num_dims = len(output.shape.as_list())
@@ -539,12 +563,18 @@ def embedding_postprocessor(input_tensor,
             # Only the last two dimensions are relevant (`seq_length` and `width`), so
             # we broadcast among the first dimensions, which is typically just
             # the batch size.
+
+            # 将position_embeddings reshape为[1, seq_length, input_embedding_size]
             position_broadcast_shape = []
             for _ in range(num_dims - 2):
                 position_broadcast_shape.append(1)
             position_broadcast_shape.extend([seq_length, width])
             position_embeddings = tf.reshape(position_embeddings,
                                              position_broadcast_shape)
+
+            # output size: [batch_size, seq_length, input_embedding_size]
+            # position_embeddisngs size: [1, seq_length, input_embedding_size]
+            # 相加后相当于在batch的每一个样本上加上了位置embedding
             output += position_embeddings
 
     output = layer_norm_and_dropout(output, dropout_prob)
@@ -922,6 +952,11 @@ def transformer_model(input_tensor,
         return final_output
 
 
+###################################################################################################
+#
+# 返回输入tensor的shape列表. 其中 shape list的静态维度保持为静态整数，动态维度保持为Tensor标量.
+#
+###################################################################################################
 def get_shape_list(tensor, expected_rank=None, name=None):
     """Returns a list of the shape of tensor, preferring static dimensions.
 
@@ -986,6 +1021,14 @@ def reshape_from_matrix(output_tensor, orig_shape_list):
     return tf.reshape(output_tensor, orig_dims + [width])
 
 
+###################################################################################################
+#
+# 判断输入 `tensor` 的rank是否与预期 `expected_rank` 相符
+#    1. 如果 expected_rank 是一个整数，则直接判断tensor的rank是否相等
+#    2. 否则，如果 expected_rank 是一个整数列表，则判断tensor的rank是否在列表内。
+# 如果两种方式判断失败，则抛出异常.
+#
+###################################################################################################
 def assert_rank(tensor, expected_rank, name=None):
     """Raises an exception if the tensor rank is not of the expected rank.
 
@@ -1001,10 +1044,10 @@ def assert_rank(tensor, expected_rank, name=None):
         name = tensor.name
 
     expected_rank_dict = {}
-    if isinstance(expected_rank, six.integer_types):
+    if isinstance(expected_rank, six.integer_types):  # 如果输入是整数，直接判断两者是否相等即可.
         expected_rank_dict[expected_rank] = True
     else:
-        for x in expected_rank:
+        for x in expected_rank:  # 如果输入是列表，判断实际的rank是否在列表内，如果不在则抛出异常.
             expected_rank_dict[x] = True
 
     actual_rank = tensor.shape.ndims
