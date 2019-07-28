@@ -233,6 +233,7 @@ class BertModel(object):
                     initializer_range=config.initializer_range,
                     do_return_all_layers=True)
 
+            # 取出最后一层Stack的输出, shape: [Batch_size, seq_length, hidden_size]
             self.sequence_output = self.all_encoder_layers[-1]
             # The "pooler" converts the encoded sequence tensor of shape
             # [batch_size, seq_length, hidden_size] to a tensor of shape
@@ -242,7 +243,11 @@ class BertModel(object):
             with tf.variable_scope("pooler"):
                 # We "pool" the model by simply taking the hidden state corresponding
                 # to the first token. We assume that this has been pre-trained
+
+                # 取出第一个token [CLS] 的表示, shape: [batch_size, hidden_size]
                 first_token_tensor = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
+
+                # 将第一个[CLS]的表示进行线性变换，并取tanh激活，得到最终的输出.
                 self.pooled_output = tf.layers.dense(
                     first_token_tensor,
                     config.hidden_size,
@@ -692,6 +697,7 @@ def attention_layer(from_tensor,
     from_tensor_2d = reshape_to_matrix(from_tensor)
     to_tensor_2d = reshape_to_matrix(to_tensor)
 
+    # Attention机制，先对Query, Key, Value分别进行线性变换和激活函数
     # `query_layer` = [B*F, N*H]
     query_layer = tf.layers.dense(
         from_tensor_2d,
@@ -717,6 +723,7 @@ def attention_layer(from_tensor,
         kernel_initializer=create_initializer(initializer_range))
 
     # `query_layer` = [B, N, F, H]
+    # 然后将Query和Key Tensor分别展开为[Batch_size, num_attention_heads, seq_length, size_per_head]的Tensor.
     query_layer = transpose_for_scores(query_layer, batch_size,
                                        num_attention_heads, from_seq_length,
                                        size_per_head)
@@ -728,12 +735,19 @@ def attention_layer(from_tensor,
     # Take the dot product between "query" and "key" to get the raw
     # attention scores.
     # `attention_scores` = [B, N, F, T]
+
+    # 计算Attention_Scores, shape: [Batch_size, num_attention_heads, from_seq_length, to_seq_length]
+    # 计算矩阵乘积: Q*K^T
     attention_scores = tf.matmul(query_layer, key_layer, transpose_b=True)
+    
+    # 缩放计算： (Q*K^T)/sqrt(d_k), 得到未经过softmax的Attention Score:
+    #          [Batch_size, num_attention_heads, from_seq_length, to_seq_length]
     attention_scores = tf.multiply(attention_scores,
                                    1.0 / math.sqrt(float(size_per_head)))
 
     if attention_mask is not None:
         # `attention_mask` = [B, 1, F, T]
+        # Mask矩阵,shape: [Batch_sze, 1, from_seq_length, to_seq_length]
         attention_mask = tf.expand_dims(attention_mask, axis=[1])
 
         # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
@@ -743,16 +757,21 @@ def attention_layer(from_tensor,
 
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
+        # 对于不需要Attention的位置在原始的logits值上加上-10000.0, 使得后续softmax后这部分值无限接近于零
         attention_scores += adder
 
     # Normalize the attention scores to probabilities.
     # `attention_probs` = [B, N, F, T]
+
+    # 进行softmax操作，按行进行softmax
     attention_probs = tf.nn.softmax(attention_scores)
 
     # This is actually dropping out entire tokens to attend to, which might
     # seem a bit unusual, but is taken from the original Transformer paper.
+    # 对Attention得到的概率矩阵进行dropout.
     attention_probs = dropout(attention_probs, attention_probs_dropout_prob)
 
+    # 将Value层reshape成为[Batch_size, num_attention_heads, to_seq_length, size_per_head]
     # `value_layer` = [B, T, N, H]
     value_layer = tf.reshape(
         value_layer,
@@ -761,12 +780,15 @@ def attention_layer(from_tensor,
     # `value_layer` = [B, N, T, H]
     value_layer = tf.transpose(value_layer, [0, 2, 1, 3])
 
+    # 计算 (Q*K^T)/sqrt(d_k) * Value 得到，最终 [Batch_size, num_attention_heads, from_seq_length, size_per_head]
     # `context_layer` = [B, N, F, H]
     context_layer = tf.matmul(attention_probs, value_layer)
 
     # `context_layer` = [B, F, N, H]
+    # 将矩阵转置过来，得到 [Batch_size, from_seq_length, num_attention_heads, size_per_head]
     context_layer = tf.transpose(context_layer, [0, 2, 1, 3])
 
+    # 最后将multi-head维度合并, 得到[Batch_size*from_seq_length, num_attention_heads*size_per_head]
     if do_return_2d_tensor:
         # `context_layer` = [B*F, N*H]
         context_layer = tf.reshape(
@@ -850,6 +872,8 @@ def transformer_model(input_tensor,
     # forth from a 3D tensor to a 2D tensor. Re-shapes are normally free on
     # the GPU/CPU but may not be free on the TPU, so we want to minimize them to
     # help the optimizer.
+
+    # 将输入Tensor从[batch_size, seq_len, embedding_size]压缩为[batch_size*seq_len, embedding_size]
     prev_output = reshape_to_matrix(input_tensor)
 
     all_layer_outputs = []
@@ -885,14 +909,18 @@ def transformer_model(input_tensor,
                 # Run a linear projection of `hidden_size` then add a residual
                 # with `layer_input`.
                 with tf.variable_scope("output"):
+                    # 对Attention输出后的output做一个简单的线性映射,并进行dropout
                     attention_output = tf.layers.dense(
                         attention_output,
                         hidden_size,
                         kernel_initializer=create_initializer(initializer_range))
                     attention_output = dropout(attention_output, hidden_dropout_prob)
+                    # 对Attention后的输出进行Res连接：Add & norm
                     attention_output = layer_norm(attention_output + layer_input)
 
             # The activation is only applied to the "intermediate" hidden layer.
+            # 然后进入FFN层：FFN包括两次线性变换，Relu(xW1+b1) * W2 + b2.
+            # 第一次变换先放大到2048, 第二次再压缩回512.
             with tf.variable_scope("intermediate"):
                 intermediate_output = tf.layers.dense(
                     attention_output,
@@ -907,10 +935,14 @@ def transformer_model(input_tensor,
                     hidden_size,
                     kernel_initializer=create_initializer(initializer_range))
                 layer_output = dropout(layer_output, hidden_dropout_prob)
+
+                # 然后还是 Add & Norm 操作，得到最终Block的输出
                 layer_output = layer_norm(layer_output + attention_output)
+
                 prev_output = layer_output
                 all_layer_outputs.append(layer_output)
 
+    # 返回每一层Stack的Attention-Block的输出，或者是最后一层Block的输出.
     if do_return_all_layers:
         final_outputs = []
         for layer_output in all_layer_outputs:
