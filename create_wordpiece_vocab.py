@@ -33,8 +33,9 @@ def train_sentencepiece_model(input_file, output_dir, sentencepiece_vocab_size,
     :return:
     """
     output_prefix = os.path.join(output_dir, "sentencepiece")
+    logger.info("sentencepiece model prefix: %s" % output_prefix)
 
-    cmd_str = '--input=%s --model_prefix=%s --vocab_size=%d, --character_coverage=%f, --model_type=%s' % (
+    cmd_str = '--input=%s --model_prefix=%s --vocab_size=%d, --character_coverage=%f, --model_type=%s --input_sentence_size=10000000 --shuffle_input_sentence=true' % (
         input_file, output_prefix, sentencepiece_vocab_size, character_coverage, model_type)
     spm.SentencePieceTrainer.Train(cmd_str)
 
@@ -412,33 +413,15 @@ def run(input_files, output_dir, vocab_size, do_lower,
 
 
 if __name__ == "__main__":
-    # sp_vocab = load_sentencepiece_vocab("./dataset/sample_sentencepiece.vocab")
-    # #print(sp_vocab[0:50])
-    # wp_vocab = convert_sentencepiece_to_wordpiece(sp_vocab, 100)
-    # print(wp_vocab[0:100])
-    # save_vocab_to_file(wp_vocab, "./dataset/sample_wordpiece.vocab")
+    # run("dataset/full_data/bert_input_part1.txt,dataset/full_data/bert_input_part2.txt,"
+    #     "dataset/full_data/bert_input_part3.txt,dataset/full_data/bert_input_part4.txt,"
+    #     "dataset/full_data/bert_input_part5.txt,dataset/full_data/bert_input_part6.txt",
+    #     "output_vocab/", 60000, False, 1000)
 
-    # basic_tokenizer = BasicTokenizer(False)
-    # with open("E:\\code\\tmp_tmp.txt", "r", encoding="utf-8") as fr:
-    #     with open("E:\\code\\tmp_tmp_tokenized.txt", "w", encoding="utf-8") as fw:
-    #         for i, line in enumerate(fr, 1):
-    #             if line.strip() != "":
-    #                 output_tokens = basic_tokenizer.tokenize(line)
-    #                 outline = " ".join(output_tokens) + "\n"
-    #                 fw.write(outline)
-    #
-    #                 if i % 50000 == 0:
-    #                     print("Line %d finished" % i)
-
-    # run_basic_tokenization("dataset/sample_ori_content_clean.txt", "dataset/sample_ori_content_clean_token_new.txt", False)
-    #
-    # train_sentencepiece_model("dataset/sample_ori_content_clean_token_new.txt", "./temp/", 10000)
-    #
-    # sp_vocab = load_sentencepiece_vocab("./temp/sentencepiece.vocab")
-    # wp_vocab = convert_sentencepiece_to_wordpiece(sp_vocab, 100, False)
-    # save_vocab_to_file(wp_vocab, "./temp/wordpiece.vocab")
-
-    run("dataset/full_data/bert_input_part1.txt,dataset/full_data/bert_input_part2.txt,"
-        "dataset/full_data/bert_input_part3.txt,dataset/full_data/bert_input_part4.txt,"
-        "dataset/full_data/bert_input_part5.txt,dataset/full_data/bert_input_part6.txt",
-        "output_vocab/", 60000, False, 1000)
+    # train_sentencepiece_model("output_vocab/bert_input_part1_tokenized.txt,"
+    #                           "output_vocab/bert_input_part2_tokenized.txt,"
+    #                           "output_vocab/bert_input_part3_tokenized.txt,"
+    #                           "output_vocab/bert_input_part4_tokenized.txt,"
+    #                           "output_vocab/bert_input_part5_tokenized.txt",
+    #                           "output_vocab/", 60000, 0.9995, "unigram")
+    pass
