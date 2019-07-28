@@ -117,4 +117,8 @@ dmypy.json
 
 # Customized Ignore
 outputs/
+dataset/
+output_vocab/
+temp/
 .idea/
+doc_results/
