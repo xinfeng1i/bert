@@ -237,14 +237,26 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     return model_fn
 
 
+###################################################################################################
+#
+# 输入最后一层的embedding表示，已经mask的位置, mask的groundtruth label, label_weights
+# 输出该batch的平均每个mask位置的loss, 该batch每个mask位置的loss以及对应的softmax概率分布
+#
+###################################################################################################
 def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
                          label_ids, label_weights):
     """Get loss and log probs for the masked LM."""
+
+    # input_tensor 是最后一层的表示向量，经过gather_indexes后
+    # 的input_tensor 二维矩阵 [flat_position_length, hidden_size(768)]
     input_tensor = gather_indexes(input_tensor, positions)
 
     with tf.variable_scope("cls/predictions"):
         # We apply one more non-linear transformation before the output layer.
         # This matrix is not used after pre-training.
+
+        # 将得到的位置 x hidden_size 的矩阵，再一次进行全连接层，然后经layer_norm
+        # 得到的仍然是二维矩阵 [flat_position_length, hidden_size(768)]
         with tf.variable_scope("transform"):
             input_tensor = tf.layers.dense(
                 input_tensor,
@@ -256,17 +268,26 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
 
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
+
+        # 其中output是embedding_table, 这一步的作用是首先创建vocab_size个bias变量，然后
+        # 将input_tensor和embedding表格中的每个向量内积，然后加上bias，作为最终的logits值
+        # shape: [position_lengths, vocab_size]
         output_bias = tf.get_variable(
             "output_bias",
             shape=[bert_config.vocab_size],
             initializer=tf.zeros_initializer())
         logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
         logits = tf.nn.bias_add(logits, output_bias)
+
+        # 计算softmax概率的对数值
+        # shape: [position_lengths, vocab_size]
         log_probs = tf.nn.log_softmax(logits, axis=-1)
 
         label_ids = tf.reshape(label_ids, [-1])
         label_weights = tf.reshape(label_weights, [-1])
 
+        # 将对应的位置的groundtruth label表示成one-hot表示，shape: [position_lengths, vocab_size]
+        # 每一个行是一个onehot向量
         one_hot_labels = tf.one_hot(
             label_ids, depth=bert_config.vocab_size, dtype=tf.float32)
 
@@ -274,20 +295,35 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
         # short to have the maximum number of predictions). The `label_weights`
         # tensor has a value of 1.0 for every real prediction and 0.0 for the
         # padding predictions.
+
+        # 计算交叉熵损失: -sum plogp^，由于之前已经计算了 lopp^，所以这里可以简化计算
+        # shape: [positions_length, ]
         per_example_loss = -tf.reduce_sum(log_probs * one_hot_labels, axis=[-1])
+
+        # 总计masked_positions的损失和
         numerator = tf.reduce_sum(label_weights * per_example_loss)
+
         denominator = tf.reduce_sum(label_weights) + 1e-5
+
+        # 平均每个mask位置的损失
         loss = numerator / denominator
 
     return (loss, per_example_loss, log_probs)
 
 
+###################################################################################################
+#
+# 这里输入input_tensor最后一层的[CLS]表示, shape: [batch_size, hidden_size]
+# label是预测下一个句子的标志. shape: [batch_size,]
+#
+###################################################################################################
 def get_next_sentence_output(bert_config, input_tensor, labels):
     """Get loss and log probs for the next sentence prediction."""
 
     # Simple binary classification. Note that 0 is "next sentence" and 1 is
     # "random sentence". This weight matrix is not used after pre-training.
     with tf.variable_scope("cls/seq_relationship"):
+        # 首先创建了两个Tensor用于对
         output_weights = tf.get_variable(
             "output_weights",
             shape=[2, bert_config.hidden_size],
@@ -305,6 +341,16 @@ def get_next_sentence_output(bert_config, input_tensor, labels):
         return (loss, per_example_loss, log_probs)
 
 
+###################################################################################################
+#
+# 从seq_tensor中收集对应positions的表示.
+# Args:
+#   seq_tensor: shape: [batch_size, seq_length, hidden_size]
+#   positions:  shape: [batch_size, mask_position_length]
+# Output:
+#   shape: [flat_positions, hidden_size]的二位矩阵，表示每一个位置对应的hidden向量
+#
+###################################################################################################
 def gather_indexes(sequence_tensor, positions):
     """Gathers the vectors at the specific positions over a minibatch."""
     sequence_shape = modeling.get_shape_list(sequence_tensor, expected_rank=3)
@@ -314,9 +360,17 @@ def gather_indexes(sequence_tensor, positions):
 
     flat_offsets = tf.reshape(
         tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])
+
+    # 将多个Batch的Mask位置压缩成一维Tensor，例如:
+    # batch=2, e1_positions=[0,1,2], e2_position=[0,3,4]
+    # 假设Seq_len=5, 则压缩后的 flat_positions = [0,1,2,5,8,9]
     flat_positions = tf.reshape(positions + flat_offsets, [-1])
+
+    # 同理，将seq_tensor也按照batch压缩成一维Tensor
     flat_sequence_tensor = tf.reshape(sequence_tensor,
                                       [batch_size * seq_length, width])
+
+    # gather, 输出对应位置的表示向量, shape: [position_nums, hidden_size]
     output_tensor = tf.gather(flat_sequence_tensor, flat_positions)
     return output_tensor
 
@@ -427,6 +481,13 @@ def main(_):
             FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
     is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
+
+    ###############################################################################################
+    # 指定 Estimator 运行时的配置, 包括:
+    #   model_dir: 输出模型的路径
+    #   save_checkpoints_steps: 每多少步保存一次checkpoints
+    #   tpu_config: TPU的配置方式等
+    ###############################################################################################
     run_config = tf.contrib.tpu.RunConfig(
         cluster=tpu_cluster_resolver,
         master=FLAGS.master,
