@@ -123,3 +123,5 @@ output_vocab/
 dataset/
 temp/
 bert.zip
+old_bert.zip
+export_checkpoints/
