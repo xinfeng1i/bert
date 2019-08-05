@@ -111,6 +111,13 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                      use_one_hot_embeddings):
     """Returns `model_fn` closure for TPUEstimator."""
 
+    ###############################################################################################
+    #
+    # 根据输入的batch_size个features:
+    #     创建模型 --> 计算Loss --> 从checkpoints恢复变量 (如果有的话) --> 如果是train模式,创建优化器 -->
+    #     如果是Eval模式，计算Accuracy和Loss
+    #
+    ###############################################################################################
     def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
         """The `model_fn` for TPUEstimator."""
 
@@ -128,6 +135,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
+        # 根据模型配置参数，构建BERT模型
         model = modeling.BertModel(
             config=bert_config,
             is_training=is_training,
@@ -136,22 +144,27 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             token_type_ids=segment_ids,
             use_one_hot_embeddings=use_one_hot_embeddings)
 
+        # 计算Task1: MLM的损失
         (masked_lm_loss,
          masked_lm_example_loss, masked_lm_log_probs) = get_masked_lm_output(
             bert_config, model.get_sequence_output(), model.get_embedding_table(),
             masked_lm_positions, masked_lm_ids, masked_lm_weights)
 
+        # 计算Task2: NSP的损失
         (next_sentence_loss, next_sentence_example_loss,
          next_sentence_log_probs) = get_next_sentence_output(
             bert_config, model.get_pooled_output(), next_sentence_labels)
 
+        # 总的Loss=平均每个Mask位置的Loss损失 + 平均每个样本的NSP loss损失
         total_loss = masked_lm_loss + next_sentence_loss
 
+        # `tvars` 保存所有可训练的变量
         tvars = tf.trainable_variables()
 
         initialized_variable_names = {}
         scaffold_fn = None
         if init_checkpoint:
+            # 从checkpoints文件创建assignment_map
             (assignment_map, initialized_variable_names
              ) = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
             if use_tpu:
@@ -162,6 +175,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
                 scaffold_fn = tpu_scaffold
             else:
+                # 从checkpoints文件恢复变量的值作为初始化值
                 tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
         tf.logging.info("**** Trainable Variables ****")
@@ -173,10 +187,12 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                             init_string)
 
         output_spec = None
+        # 如果设定为训练模式，则创建对应的优化器（训练op）
         if mode == tf.estimator.ModeKeys.TRAIN:
             train_op = optimization.create_optimizer(
                 total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 
+            # 返回output_spec对象, 包括(mode, Loss, train_op)，作为Estimator的输入
             output_spec = tf.contrib.tpu.TPUEstimatorSpec(
                 mode=mode,
                 loss=total_loss,
@@ -212,6 +228,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                 next_sentence_mean_loss = tf.metrics.mean(
                     values=next_sentence_example_loss)
 
+                # 在Eval的时候计算Task1: Masked LM任务的Loss和准确率; Task2: NSP任务的Loss和准确率
                 return {
                     "masked_lm_accuracy": masked_lm_accuracy,
                     "masked_lm_loss": masked_lm_mean_loss,
@@ -316,6 +333,8 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
 # 这里输入input_tensor最后一层的[CLS]表示, shape: [batch_size, hidden_size]
 # label是预测下一个句子的标志. shape: [batch_size,]
 #
+# 返回：(平均每个样本的Loss, Batch个样本的总Loss, Batch个样本log_probs)
+#
 ###################################################################################################
 def get_next_sentence_output(bert_config, input_tensor, labels):
     """Get loss and log probs for the next sentence prediction."""
@@ -323,7 +342,7 @@ def get_next_sentence_output(bert_config, input_tensor, labels):
     # Simple binary classification. Note that 0 is "next sentence" and 1 is
     # "random sentence". This weight matrix is not used after pre-training.
     with tf.variable_scope("cls/seq_relationship"):
-        # 首先创建了两个Tensor用于对
+        # 首先创建了两个Tensor用于对input_tensor进行线性变换.
         output_weights = tf.get_variable(
             "output_weights",
             shape=[2, bert_config.hidden_size],
@@ -331,12 +350,19 @@ def get_next_sentence_output(bert_config, input_tensor, labels):
         output_bias = tf.get_variable(
             "output_bias", shape=[2], initializer=tf.zeros_initializer())
 
+        # 计算logits和softmax概率: shape: [batch_size, 2]
         logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
         logits = tf.nn.bias_add(logits, output_bias)
         log_probs = tf.nn.log_softmax(logits, axis=-1)
+
+        # 对labels进行onehot表示, labels shape: [batch_size, ], onehot labels shape: [batch_size, 2]
         labels = tf.reshape(labels, [-1])
         one_hot_labels = tf.one_hot(labels, depth=2, dtype=tf.float32)
+
+        # batch个样本的总Loss
         per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)
+
+        # 每个样本的Loss
         loss = tf.reduce_mean(per_example_loss)
         return (loss, per_example_loss, log_probs)
 
@@ -375,6 +401,7 @@ def gather_indexes(sequence_tensor, positions):
     return output_tensor
 
 
+# 创建input_fn
 def input_fn_builder(input_files,
                      max_seq_length,
                      max_predictions_per_seq,
@@ -406,6 +433,7 @@ def input_fn_builder(input_files,
         # For training, we want a lot of parallel reading and shuffling.
         # For eval, we want no shuffling and parallel reading doesn't matter.
         if is_training:
+            # 对文件名list进行Dataset化，repeat化，shuffle
             d = tf.data.Dataset.from_tensor_slices(tf.constant(input_files))
             d = d.repeat()
             d = d.shuffle(buffer_size=len(input_files))
@@ -415,6 +443,7 @@ def input_fn_builder(input_files,
 
             # `sloppy` mode means that the interleaving is not exact. This adds
             # even more randomness to the training pipeline.
+            # 流水线化读取数据Dataset
             d = d.apply(
                 tf.contrib.data.parallel_interleave(
                     tf.data.TFRecordDataset,
@@ -431,6 +460,7 @@ def input_fn_builder(input_files,
         # size dimensions. For eval, we assume we are evaluating on the CPU or GPU
         # and we *don't* want to drop the remainder, otherwise we wont cover
         # every sample.
+        # 将TFRecord格式映射为Example格式，并且进行Batch化, 扔掉多余的Reminder
         d = d.apply(
             tf.contrib.data.map_and_batch(
                 lambda record: _decode_record(record, name_to_features),
@@ -442,6 +472,11 @@ def input_fn_builder(input_files,
     return input_fn
 
 
+###################################################################################################
+#
+# 从TFRecord格式，解析为正常的Example格式
+#
+###################################################################################################
 def _decode_record(record, name_to_features):
     """Decodes a record to a TensorFlow example."""
     example = tf.parse_single_example(record, name_to_features)
@@ -498,6 +533,11 @@ def main(_):
             num_shards=FLAGS.num_tpu_cores,
             per_host_input_for_training=is_per_host))
 
+    ###############################################################################################
+    #
+    # 创建model_fn函数
+    #
+    ###############################################################################################
     model_fn = model_fn_builder(
         bert_config=bert_config,
         init_checkpoint=FLAGS.init_checkpoint,
@@ -509,6 +549,7 @@ def main(_):
 
     # If TPU is not available, this will fall back to normal Estimator on CPU
     # or GPU.
+    # 根据RunConfig和model_fn创建Estimator.
     estimator = tf.contrib.tpu.TPUEstimator(
         use_tpu=FLAGS.use_tpu,
         model_fn=model_fn,
@@ -524,6 +565,7 @@ def main(_):
             max_seq_length=FLAGS.max_seq_length,
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
             is_training=True)
+        # 调用Estimator的train函数开始训练
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
 
     if FLAGS.do_eval:
@@ -536,9 +578,11 @@ def main(_):
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
             is_training=False)
 
+        # 调用Estimator的evaluate函数进行评估
         result = estimator.evaluate(
             input_fn=eval_input_fn, steps=FLAGS.max_eval_steps)
 
+        # 保存Eval结果到文件
         output_eval_file = os.path.join(FLAGS.output_dir, "eval_results.txt")
         with tf.gfile.GFile(output_eval_file, "w") as writer:
             tf.logging.info("***** Eval results *****")
