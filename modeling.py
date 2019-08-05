@@ -344,6 +344,7 @@ def get_assignment_map_from_checkpoint(tvars, init_checkpoint):
     assignment_map = {}
     initialized_variable_names = {}
 
+    # 从 `tvars` 中导出所有变量的名字（去掉:0的数字后缀）, 建立 name->var 的字典映射
     name_to_variable = collections.OrderedDict()
     for var in tvars:
         name = var.name
@@ -352,8 +353,11 @@ def get_assignment_map_from_checkpoint(tvars, init_checkpoint):
             name = m.group(1)
         name_to_variable[name] = var
 
+    # 从checkpoints中文件中读取变量，返回 list of tuple (var_name, shape)
     init_vars = tf.train.list_variables(init_checkpoint)
 
+    # 查找checkpoint文件中已经有的变量，如果它在 name_to_variable 中也出现了
+    # 则将该变量记录在 assignment_map中，以及initialized_variable_names 中
     assignment_map = collections.OrderedDict()
     for x in init_vars:
         (name, var) = (x[0], x[1])
