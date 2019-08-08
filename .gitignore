@@ -122,3 +122,5 @@ output_vocab/
 temp/
 .idea/
 doc_results/
+export_checkpoints/
+old_bert.zip
